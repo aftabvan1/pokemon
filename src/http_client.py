@@ -61,13 +61,17 @@ class HTTPClient:
             else:
                 log.warning("HTTP client initialized without auth token")
 
-            self._client = httpx.AsyncClient(
-                http2=True,
-                timeout=self._timeout,
-                limits=self._limits,
-                proxy=self.proxy,
-                follow_redirects=True,
-            )
+            # Build client kwargs (only include proxies if set)
+            client_kwargs = {
+                "http2": True,
+                "timeout": self._timeout,
+                "limits": self._limits,
+                "follow_redirects": True,
+            }
+            if self.proxy:
+                client_kwargs["proxies"] = self.proxy
+
+            self._client = httpx.AsyncClient(**client_kwargs)
 
     async def close(self) -> None:
         """Close the client."""

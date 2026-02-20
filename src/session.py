@@ -305,13 +305,53 @@ def save_cookies(cookies: List[dict], path: Optional[Path] = None) -> None:
 async def capture_session(name: str = "default") -> None:
     """Open browser for manual login and capture cookies."""
     from playwright.async_api import async_playwright
+    from playwright_stealth import Stealth
 
-    log.info("Launching browser for login...")
+    log.info("Launching browser with stealth mode...")
     log.info("IMPORTANT: Bot protection cookies (reese84, datadome) will be captured automatically")
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context()
+    # Create stealth instance for macOS/Chrome
+    stealth = Stealth(
+        navigator_webdriver=True,
+        webgl_vendor=True,
+        chrome_app=True,
+        chrome_csi=True,
+        chrome_load_times=True,
+        chrome_runtime=True,
+        navigator_languages=True,
+        navigator_permissions=True,
+        navigator_plugins=True,
+        navigator_user_agent=True,
+        navigator_vendor=True,
+        navigator_hardware_concurrency=True,
+        navigator_platform=True,
+        media_codecs=True,
+        # Override for macOS
+        navigator_platform_override="MacIntel",
+        navigator_languages_override=("en-CA", "en"),
+    )
+
+    # Wrap playwright with stealth
+    async with stealth.use_async(async_playwright()) as p:
+        # Launch with stealth-friendly args
+        browser = await p.chromium.launch(
+            headless=False,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+            ]
+        )
+
+        context = await browser.new_context(
+            viewport={"width": 1920, "height": 1080},
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/144.0.0.0 Safari/537.36"
+            ),
+            locale="en-CA",
+        )
         page = await context.new_page()
 
         await page.goto(BASE_URL)
