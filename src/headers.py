@@ -52,6 +52,13 @@ def get_headers(
     # Add client hints
     headers.update(CLIENT_HINTS)
 
+    # Pokemon Center specific headers (discovered via DevTools)
+    headers.update({
+        "x-store-locale": "en-ca",
+        "x-store-scope": "pokemon-ca",
+        "accept-version": "1",
+    })
+
     # Request-type specific headers
     if request_type == "api":
         headers.update({
@@ -106,6 +113,10 @@ def get_monitor_headers(cookies: str = "", auth_token: Optional[str] = None) -> 
         "Accept-Language": "en-CA,en-GB;q=0.9,en-US;q=0.8,en;q=0.7",
         "Accept-Encoding": "gzip, deflate, br, zstd",
         **CLIENT_HINTS,
+        # Pokemon Center specific
+        "x-store-locale": "en-ca",
+        "x-store-scope": "pokemon-ca",
+        "accept-version": "1",
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",

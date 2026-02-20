@@ -1,4 +1,4 @@
-"""CLI entry point using typer."""
+"""CLI entry point using typer ⚡."""
 
 import asyncio
 from pathlib import Path
@@ -13,7 +13,8 @@ from .config import Config
 from .display import (
     console, task_table, summary_panel, full_display,
     print_banner, print_banner_small, success_box, error_box, warning_box, info_box,
-    LOGO_SMALL, TAGLINE,
+    LOGO_SMALL, TAGLINE, LIGHTNING_BOLT,
+    show_interactive_menu, show_full_status, show_quick_guide,
 )
 from .tasks import TaskManager
 
@@ -31,21 +32,25 @@ def version_callback(value: bool):
 
 app = typer.Typer(
     name="porter",
-    help="Porter - Lightning-fast auto-purchase bot",
+    help="Porter - Lightning-fast auto-purchase bot ⚡",
     add_completion=False,
     rich_markup_mode="rich",
+    invoke_without_command=True,  # Show menu when no command given
 )
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main_callback(
+    ctx: typer.Context,
     version: Optional[bool] = typer.Option(
         None, "--version", "-v", callback=version_callback, is_eager=True,
         help="Show version and exit"
     ),
 ):
-    """[bold #FFD700]◆[/] Porter - Lightning-fast auto-purchase bot"""
-    pass
+    """[bold #FFD700]⚡[/] Porter - Lightning-fast auto-purchase bot"""
+    # Show interactive menu if no command provided
+    if ctx.invoked_subcommand is None:
+        show_interactive_menu()
 
 
 @app.command()
@@ -367,6 +372,267 @@ def test_proxies(
             console.print(f"  [dim]•[/] {name}: {s['healthy']}/{s['total']} healthy")
 
     asyncio.run(run_warmup())
+
+
+@app.command(name="add-task")
+def add_task(
+    url: Optional[str] = typer.Argument(None, help="Pokemon Center product URL"),
+):
+    """Add a new task interactively or from a URL."""
+    from rich.prompt import Prompt, Confirm
+    from rich.table import Table
+    import csv
+    import re
+
+    print_banner_small()
+
+    data_dir = Path("data")
+    data_dir.mkdir(exist_ok=True)
+    tasks_path = data_dir / "tasks.csv"
+    profiles_path = data_dir / "profiles.csv"
+
+    # Load existing profiles
+    profiles = []
+    if profiles_path.exists():
+        with open(profiles_path) as f:
+            reader = csv.DictReader(f)
+            profiles = [row["profile_name"] for row in reader]
+
+    if not profiles:
+        console.print(error_box("No profiles found. Run [bold]porter setup[/] first."))
+        raise typer.Exit(1)
+
+    # Get URL or prompt for it
+    if not url:
+        console.print(info_box(
+            "Paste a Pokemon Center product URL\n\n"
+            "[dim]Example: pokemoncenter.com/en-ca/product/[cyan]100-10341[/]/product-name[/]"
+        ))
+        console.print()
+        url = Prompt.ask("Product URL")
+
+    # Extract human-readable product ID from URL
+    match = re.search(r'/product/([^/]+)', url)
+    if match:
+        human_id = match.group(1)
+        console.print(f"  {LIGHTNING_BOLT} Product: [bold cyan]{human_id}[/]")
+    else:
+        console.print(error_box("Could not parse product ID from URL"))
+        raise typer.Exit(1)
+
+    # Fetch the encoded product ID from the page
+    console.print(f"  {LIGHTNING_BOLT} Fetching product data...")
+
+    async def fetch_encoded_id():
+        from .product import get_encoded_product_id
+        from .session import load_session
+        from .http_client import HTTPClient
+
+        try:
+            session = load_session()
+        except FileNotFoundError:
+            return None, "No session cookies. Run 'porter login' first."
+
+        async with HTTPClient(
+            cookies=session.cookies,
+            auth_token=session.auth_token,
+        ) as client:
+            encoded_id = await get_encoded_product_id(client, human_id)
+            return encoded_id, None
+
+    encoded_id, error = asyncio.run(fetch_encoded_id())
+
+    if error:
+        console.print(error_box(error))
+        raise typer.Exit(1)
+
+    if encoded_id:
+        console.print(f"  {LIGHTNING_BOLT} Encoded ID: [bold green]{encoded_id[:25]}...[/]")
+        product_id = encoded_id
+    else:
+        console.print(warning_box(
+            "Could not auto-detect encoded ID.\n"
+            "The bot may not work correctly without it.\n\n"
+            "[dim]Tip: Find the encoded ID in Chrome DevTools when adding to cart[/]"
+        ))
+        use_human = Confirm.ask("Use human-readable ID anyway?", default=False)
+        if use_human:
+            product_id = human_id
+        else:
+            product_id = Prompt.ask("Enter encoded ID manually")
+
+    console.print()
+
+    # Size selection
+    console.print("[bold white]Select size:[/]")
+    sizes = ["ONE_SIZE", "S", "M", "L", "XL", "XXL", "Other"]
+    for i, size in enumerate(sizes, 1):
+        console.print(f"  [#FFD700]{i}[/]  {size}")
+
+    size_choice = Prompt.ask("Choice", default="1")
+    try:
+        size_idx = int(size_choice) - 1
+        if 0 <= size_idx < len(sizes) - 1:
+            size = sizes[size_idx]
+        else:
+            size = Prompt.ask("Enter size")
+    except ValueError:
+        size = size_choice.upper()
+
+    console.print()
+
+    # Profile selection
+    if len(profiles) == 1:
+        profile = profiles[0]
+        console.print(f"  {LIGHTNING_BOLT} Using profile: [bold cyan]{profile}[/]")
+    else:
+        console.print("[bold white]Select profile:[/]")
+        for i, p in enumerate(profiles, 1):
+            console.print(f"  [#FFD700]{i}[/]  {p}")
+        profile_choice = Prompt.ask("Choice", default="1")
+        try:
+            profile = profiles[int(profile_choice) - 1]
+        except (ValueError, IndexError):
+            profile = profiles[0]
+
+    console.print()
+
+    # Priority
+    console.print("[bold white]Priority:[/]")
+    console.print(f"  [#FFD700]1[/]  high [dim](for limited drops)[/]")
+    console.print(f"  [#FFD700]2[/]  normal")
+    console.print(f"  [#FFD700]3[/]  low")
+    priority_choice = Prompt.ask("Choice", default="1")
+    priority_map = {"1": "high", "2": "normal", "3": "low"}
+    priority = priority_map.get(priority_choice, "high")
+
+    # Proxy group (default to residential for safety)
+    proxy_group = "residential"
+
+    # Show summary
+    console.print()
+    table = Table(show_header=False, box=box.SIMPLE, padding=(0, 2))
+    table.add_column("Field", style="dim")
+    table.add_column("Value", style="bold white")
+    table.add_row("Product", product_id)
+    table.add_row("Size", size)
+    table.add_row("Profile", profile)
+    table.add_row("Priority", priority)
+
+    console.print(Panel(table, title=f"{LIGHTNING_BOLT} [bold white]New Task[/]", border_style="#3B4CCA"))
+
+    if not Confirm.ask("\nAdd this task?", default=True):
+        console.print("[dim]Cancelled[/]")
+        return
+
+    # Add to CSV
+    file_exists = tasks_path.exists() and tasks_path.stat().st_size > 0
+
+    with open(tasks_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["product_id", "size", "profile", "proxy_group", "priority"])
+        writer.writerow([product_id, size, profile, proxy_group, priority])
+
+    console.print()
+    console.print(success_box(f"Task added! You now have tasks ready to run."))
+    console.print()
+    console.print(f"  [dim]Run[/] [bold]porter run[/] [dim]to start monitoring[/]")
+    console.print()
+
+
+@app.command(name="list-tasks")
+def list_tasks():
+    """Show all configured tasks."""
+    import csv
+
+    print_banner_small()
+
+    tasks_path = Path("data/tasks.csv")
+    if not tasks_path.exists():
+        console.print(warning_box("No tasks file found. Run [bold]porter add-task[/] to create one."))
+        return
+
+    with open(tasks_path) as f:
+        reader = csv.DictReader(f)
+        tasks_list = list(reader)
+
+    if not tasks_list:
+        console.print(warning_box("No tasks configured. Run [bold]porter add-task[/] to add one."))
+        return
+
+    from rich.table import Table
+
+    table = Table(
+        title=f"{LIGHTNING_BOLT} [bold white]Tasks[/]",
+        border_style="#3B4CCA",
+        show_lines=True,
+    )
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Product ID", style="cyan")
+    table.add_column("Size", justify="center")
+    table.add_column("Profile", style="dim")
+    table.add_column("Priority", justify="center")
+
+    for i, task in enumerate(tasks_list, 1):
+        priority_style = {"high": "bold #FFD700", "normal": "white", "low": "dim"}.get(task.get("priority", "normal"), "white")
+        table.add_row(
+            str(i),
+            task.get("product_id", "")[:40],
+            task.get("size", ""),
+            task.get("profile", ""),
+            f"[{priority_style}]{task.get('priority', 'normal')}[/]"
+        )
+
+    console.print(table)
+    console.print()
+    console.print(f"  [dim]Run[/] [bold]porter run[/] [dim]to start monitoring[/]")
+    console.print()
+
+
+@app.command(name="clear-tasks")
+def clear_tasks():
+    """Clear all tasks."""
+    from rich.prompt import Confirm
+
+    print_banner_small()
+
+    tasks_path = Path("data/tasks.csv")
+    if not tasks_path.exists():
+        console.print(info_box("No tasks file exists."))
+        return
+
+    if Confirm.ask(f"{LIGHTNING_BOLT} Clear all tasks?", default=False):
+        tasks_path.write_text("product_id,size,profile,proxy_group,priority\n")
+        console.print(success_box("All tasks cleared."))
+    else:
+        console.print("[dim]Cancelled[/]")
+
+
+@app.command()
+def setup():
+    """Run the interactive setup wizard."""
+    from .wizard import run_setup_wizard
+    run_setup_wizard()
+
+
+@app.command()
+def init():
+    """Run the interactive setup wizard (alias for setup)."""
+    from .wizard import run_setup_wizard
+    run_setup_wizard()
+
+
+@app.command()
+def status():
+    """Show full configuration status dashboard."""
+    show_full_status()
+
+
+@app.command()
+def guide():
+    """Show quick start tutorial."""
+    show_quick_guide()
 
 
 def main():

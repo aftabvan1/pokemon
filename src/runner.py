@@ -87,7 +87,11 @@ async def run_task(
         # === CART PHASE ===
         if task.state == State.CARTED:
             try:
-                cart_data = await add_to_cart(client, task.product_id, task.size)
+                # TODO: Need to resolve product_id to encoded_product_id
+                # The cart API needs the encoded ID (e.g., 'qgqvhkjxgazs2ojwgm4dc=')
+                # not the human-readable SKU (e.g., '70-11179-101')
+                # For now, assume task.product_id is already encoded
+                cart_data = await add_to_cart(client, task.product_id, quantity=1)
                 task.state = State.CHECKOUT
 
             except CartError as e:
@@ -100,7 +104,7 @@ async def run_task(
                     if token:
                         # Retry cart with new token
                         try:
-                            await add_to_cart(client, task.product_id, task.size)
+                            await add_to_cart(client, task.product_id, quantity=1)
                             task.state = State.CHECKOUT
                         except Exception as retry_e:
                             task.state = State.FAILED

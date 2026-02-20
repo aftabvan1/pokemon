@@ -1,52 +1,56 @@
 """
-Salesforce Commerce Cloud (SFCC) API endpoints for Pokemon Center.
+Pokemon Center API endpoints (TPCI E-commerce).
 
-Based on manual interception research. The site runs on Demandware/SFCC
-with Imperva, Reese84, DataDome, and CloudFront protection layers.
+Discovered via browser DevTools interception. The site uses a custom
+TPCI (The Pokemon Company International) e-commerce API layer.
+
+Bot protection: Imperva, Reese84, DataDome, CloudFront
 """
 
 # =============================================================================
 # BASE CONFIGURATION
 # =============================================================================
 BASE_URL = "https://www.pokemoncenter.com"
-BASE_API = "/site/en-ca/resourceapi"
+TPCI_API = "/tpci-ecommweb-api"  # The actual e-commerce API
 LOCALE = "en-ca"
+STORE_SCOPE = "pokemon-ca"
+
+# =============================================================================
+# PRODUCT DATA
+# =============================================================================
+# Product page URL format
+PRODUCT_PAGE = "/en-ca/product/{product_id}"
+
+# The product page likely has JSON data embedded with the encoded variant ID
+# This encoded ID (e.g., 'qgqvhkjxgazs2ojwgm4dc=') is needed for cart operations
 
 # =============================================================================
 # STOCK CHECKING
 # =============================================================================
-# Product availability endpoint (needs field name verification via DevTools)
-# Response structure varies - check actual response for correct field
-STOCK_CHECK = f"{BASE_API}/products/{{product_id}}/availability"
-
-# Stock response parsing - UPDATE THESE after DevTools verification
-# Possible field names (try each until one works):
-#   - data["availability"]["orderable"]
-#   - data["inventoryStatus"] == "IN_STOCK"
-#   - data["available"] == True
-#   - data["inStock"] == True
-STOCK_STATUS_KEY = "availability"  # Top-level key (placeholder)
-STOCK_IN_STOCK_VALUE = True        # Expected value when in stock
-
+# TODO: Find actual stock check endpoint via DevTools
+# The product page likely fetches availability from somewhere
+STOCK_CHECK = f"{TPCI_API}/product/{{product_id}}/availability"
 
 # =============================================================================
-# CART OPERATIONS
+# CART OPERATIONS (VERIFIED via DevTools intercept)
 # =============================================================================
-# SFCC uses same endpoint for GET (view) and POST (add)
-CART_ADD = f"{BASE_API}/cart"   # POST
-CART_VIEW = f"{BASE_API}/cart"  # GET
-CART_CLEAR = f"{BASE_API}/cart" # DELETE (if supported)
+# Cart-add: POST /tpci-ecommweb-api/cart/add-product/{encoded_product_id}
+# Returns 201 Created on success
+CART_ADD = f"{TPCI_API}/cart/add-product"  # Append /{product_id} at runtime
+CART_VIEW = f"{TPCI_API}/cart"
+CART_CLEAR = f"{TPCI_API}/cart/clear"
 
 
 # =============================================================================
 # CHECKOUT FLOW
 # =============================================================================
-# Standard SFCC checkout sequence
-CHECKOUT_INIT = f"{BASE_API}/checkout"
-CHECKOUT_SHIPPING = f"{BASE_API}/checkout/shipping"
-CHECKOUT_PAYMENT = f"{BASE_API}/checkout/payment"
-CHECKOUT_SUBMIT = f"{BASE_API}/checkout/submit"
-ORDER_CONFIRM = f"{BASE_API}/orders/{{order_id}}"
+# TODO: These endpoints need to be discovered via DevTools
+# May use TPCI_API or a different checkout service
+CHECKOUT_INIT = f"{TPCI_API}/checkout"
+CHECKOUT_SHIPPING = f"{TPCI_API}/checkout/shipping"
+CHECKOUT_PAYMENT = f"{TPCI_API}/checkout/payment"
+CHECKOUT_SUBMIT = f"{TPCI_API}/checkout/submit"
+ORDER_CONFIRM = f"{TPCI_API}/orders/{{order_id}}"
 
 
 # =============================================================================
@@ -71,21 +75,23 @@ REQUIRED_COOKIES = [
 # PAYLOAD TEMPLATES
 # =============================================================================
 
-def cart_add_payload(product_id: str, size: str = "", quantity: int = 1) -> dict:
+def cart_add_payload(quantity: int = 1, clobber: bool = False) -> dict:
     """
-    Build add-to-cart payload.
+    Build add-to-cart payload (discovered via DevTools).
 
-    SFCC typically uses a simple structure. The 'size' field may not be needed
-    if it's encoded in the product_id variant.
+    The product ID goes in the URL path, not the body.
+    POST /tpci-ecommweb-api/cart/add-product/{encoded_product_id}
+
+    Args:
+        quantity: Number of items to add
+        clobber: If True, replace existing item in cart
     """
-    payload = {
-        "productId": product_id,
+    return {
+        "clobber": clobber,
         "quantity": quantity,
+        "configuration": {},
+        "dynamicAdd": False,
     }
-    # Only add size if provided (some products don't have sizes)
-    if size:
-        payload["size"] = size
-    return payload
 
 
 def shipping_payload(profile) -> dict:
@@ -135,6 +141,16 @@ def payment_payload(profile) -> dict:
 def url(endpoint: str, **kwargs) -> str:
     """Build full URL from endpoint template."""
     return BASE_URL + endpoint.format(**kwargs)
+
+
+def cart_add_url(encoded_product_id: str) -> str:
+    """
+    Build cart-add URL with product ID in path.
+
+    The encoded_product_id is a base64-like string (e.g., 'qgqvhkjxgazs2ojwgm4dc=')
+    that identifies the product variant.
+    """
+    return f"{BASE_URL}{CART_ADD}/{encoded_product_id}"
 
 
 def product_referer(product_id: str, slug: str = "") -> str:

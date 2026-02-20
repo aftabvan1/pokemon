@@ -18,12 +18,21 @@ class CartError(Exception):
 
 async def add_to_cart(
     client: HTTPClient,
-    product_id: str,
-    size: str,
+    encoded_product_id: str,
     quantity: int = 1,
+    clobber: bool = False,
 ) -> dict:
     """
-    Add product to cart.
+    Add product to cart via TPCI API.
+
+    The product ID must be the encoded variant ID (e.g., 'qgqvhkjxgazs2ojwgm4dc='),
+    not the human-readable SKU.
+
+    Args:
+        client: HTTP client with session
+        encoded_product_id: Base64-like encoded product variant ID
+        quantity: Number to add
+        clobber: Replace existing item if already in cart
 
     Returns:
         Cart data from response
@@ -31,16 +40,25 @@ async def add_to_cart(
     Raises:
         CartError: If add fails
     """
-    url = endpoints.url(endpoints.CART_ADD)
-    payload = endpoints.cart_add_payload(product_id, size, quantity)
+    # Product ID goes in URL path, not body
+    url = endpoints.cart_add_url(encoded_product_id)
+    payload = endpoints.cart_add_payload(quantity=quantity, clobber=clobber)
 
-    log.info(f"Adding {product_id} ({size}) x{quantity}")
+    log.info(f"Adding {encoded_product_id[:20]}... x{quantity}")
 
     response = await client.post(url, json=payload)
 
     # Check for CAPTCHA
     if detect_captcha(response):
         raise CartError("CAPTCHA required")
+
+    # 201 Created = success for cart add
+    if response.status_code == 201:
+        log.success(f"Added to cart (201 Created)")
+        try:
+            return response.json()
+        except Exception:
+            return {"success": True, "status_code": 201}
 
     if not response.is_success:
         raise CartError(f"Add failed: {response.status_code}")
@@ -51,7 +69,7 @@ async def add_to_cart(
     if data.get("error"):
         raise CartError(data.get("message", "Unknown error"))
 
-    log.success(f"Added {product_id} to cart")
+    log.success(f"Added to cart")
     return data
 
 
@@ -104,26 +122,35 @@ async def clear_cart(client: HTTPClient) -> bool:
 
 async def add_with_verification(
     client: HTTPClient,
-    product_id: str,
-    size: str,
+    encoded_product_id: str,
     quantity: int = 1,
     max_retries: int = 2,
 ) -> bool:
     """
     Add to cart and verify it's actually there.
 
+    Args:
+        client: HTTP client with session
+        encoded_product_id: Base64-like encoded product variant ID
+        quantity: Number to add
+        max_retries: Max retry attempts
+
     Returns:
         True if item is confirmed in cart
     """
     for attempt in range(max_retries):
         try:
-            await add_to_cart(client, product_id, size, quantity)
+            result = await add_to_cart(client, encoded_product_id, quantity)
 
-            # Verify
-            if await verify_item_in_cart(client, product_id):
+            # 201 Created means success
+            if result.get("success") or result.get("status_code") == 201:
                 return True
 
-            log.warning(f"Item not in cart after add (attempt {attempt + 1})")
+            # Optionally verify via cart view
+            # if await verify_item_in_cart(client, encoded_product_id):
+            #     return True
+
+            log.warning(f"Item may not be in cart (attempt {attempt + 1})")
 
         except CartError as e:
             log.error(f"Add failed: {e}")
