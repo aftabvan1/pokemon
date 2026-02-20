@@ -1,7 +1,7 @@
-"""Product stock monitoring with jitter and rate limiting."""
+"""Product stock monitoring with SFCC response parsing."""
 from __future__ import annotations
 
-from typing import Callable, Optional, Awaitable
+from typing import Callable, Optional, Awaitable, List
 
 from . import logger
 from . import endpoints
@@ -11,21 +11,100 @@ from .timing import monitor_interval
 log = logger.get("MONITOR")
 
 
+def parse_stock_status(data: dict) -> bool:
+    """
+    Parse SFCC stock response to determine availability.
+
+    Tries multiple common SFCC response field patterns.
+    UPDATE THIS after verifying actual response structure via DevTools.
+
+    Common SFCC patterns:
+    - data["availability"]["orderable"] == True
+    - data["inventoryStatus"] == "IN_STOCK"
+    - data["available"] == True
+    - data["inStock"] == True
+    - data["product"]["availability"]["orderable"] == True
+    """
+    # Pattern 1: availability.orderable (most common SFCC)
+    if "availability" in data:
+        avail = data["availability"]
+        if isinstance(avail, dict):
+            if avail.get("orderable") is True:
+                return True
+            if avail.get("available") is True:
+                return True
+            if avail.get("inStock") is True:
+                return True
+        elif avail is True:
+            return True
+
+    # Pattern 2: inventoryStatus string
+    if data.get("inventoryStatus") == "IN_STOCK":
+        return True
+
+    # Pattern 3: Simple boolean fields
+    if data.get("available") is True:
+        return True
+    if data.get("inStock") is True:
+        return True
+    if data.get("orderable") is True:
+        return True
+
+    # Pattern 4: Nested under product
+    if "product" in data:
+        product = data["product"]
+        if isinstance(product, dict):
+            return parse_stock_status(product)  # Recurse
+
+    # Pattern 5: quantity > 0
+    qty = data.get("quantity", data.get("inventoryQuantity", data.get("ats", 0)))
+    if isinstance(qty, (int, float)) and qty > 0:
+        return True
+
+    return False
+
+
+def get_stock_status_text(data: dict) -> str:
+    """Get human-readable stock status from response."""
+    # Try common status fields
+    status = (
+        data.get("inventoryStatus")
+        or data.get("status")
+        or data.get("availability", {}).get("status")
+        or "UNKNOWN"
+    )
+
+    if isinstance(status, str):
+        return status
+
+    return "UNKNOWN"
+
+
 async def check_stock(client: HTTPClient, product_id: str) -> dict:
     """
-    Check product availability.
+    Check product availability via SFCC API.
 
     Returns:
-        dict with at least {"in_stock": bool, "raw": <original response>}
+        dict with {"in_stock": bool, "status": str, "raw": dict}
     """
     url = endpoints.url(endpoints.STOCK_CHECK, product_id=product_id)
 
     response = await client.get(url)
-    data = response.json()
 
-    # Parse stock status based on configured keys
-    status = data.get(endpoints.STOCK_STATUS_KEY, "")
-    in_stock = status == endpoints.STOCK_IN_STOCK_VALUE
+    # Handle non-JSON responses
+    try:
+        data = response.json()
+    except Exception as e:
+        log.warning(f"Non-JSON response for {product_id}: {e}")
+        return {
+            "in_stock": False,
+            "status": f"HTTP {response.status_code}",
+            "raw": {"error": str(e), "status_code": response.status_code},
+        }
+
+    # Parse stock status using multiple patterns
+    in_stock = parse_stock_status(data)
+    status = get_stock_status_text(data)
 
     return {
         "in_stock": in_stock,
@@ -86,9 +165,9 @@ async def monitor_product(
 
 async def monitor_multiple(
     client: HTTPClient,
-    product_ids: list[str],
+    product_ids: List[str],
     interval_ms: float = 300,
-) -> dict[str, bool]:
+) -> dict:
     """
     Check stock for multiple products in one pass.
 
@@ -97,7 +176,7 @@ async def monitor_multiple(
     """
     import asyncio
 
-    async def check_one(pid: str) -> tuple[str, bool]:
+    async def check_one(pid: str) -> tuple:
         try:
             result = await check_stock(client, pid)
             return (pid, result["in_stock"])

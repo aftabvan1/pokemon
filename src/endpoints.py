@@ -1,97 +1,105 @@
 """
-API endpoint constants.
+Salesforce Commerce Cloud (SFCC) API endpoints for Pokemon Center.
 
-!! IMPORTANT !!
-These are PLACEHOLDER endpoints. They will NOT work until you map
-the real API endpoints using Chrome DevTools.
-
-See: docs/ENDPOINT_MAPPING.md for instructions.
+Based on manual interception research. The site runs on Demandware/SFCC
+with Imperva, Reese84, DataDome, and CloudFront protection layers.
 """
 
-# Base URL
+# =============================================================================
+# BASE CONFIGURATION
+# =============================================================================
 BASE_URL = "https://www.pokemoncenter.com"
+BASE_API = "/site/en-ca/resourceapi"
+LOCALE = "en-ca"
 
 # =============================================================================
 # STOCK CHECKING
 # =============================================================================
-# This endpoint should return product availability/inventory status.
-# Look for requests when viewing a product page.
-#
-# Expected response structure:
-# {
-#     "status": "IN_STOCK" | "OUT_OF_STOCK",
-#     "quantity": 10,
-#     ...
-# }
-STOCK_CHECK = "/api/product/{product_id}/availability"
+# Product availability endpoint (needs field name verification via DevTools)
+# Response structure varies - check actual response for correct field
+STOCK_CHECK = f"{BASE_API}/products/{{product_id}}/availability"
 
-# What status value indicates in-stock?
-STOCK_STATUS_KEY = "status"
-STOCK_IN_STOCK_VALUE = "IN_STOCK"
+# Stock response parsing - UPDATE THESE after DevTools verification
+# Possible field names (try each until one works):
+#   - data["availability"]["orderable"]
+#   - data["inventoryStatus"] == "IN_STOCK"
+#   - data["available"] == True
+#   - data["inStock"] == True
+STOCK_STATUS_KEY = "availability"  # Top-level key (placeholder)
+STOCK_IN_STOCK_VALUE = True        # Expected value when in stock
 
 
 # =============================================================================
 # CART OPERATIONS
 # =============================================================================
-# Add to cart endpoint (POST)
-# Captured when clicking "Add to Cart" button
-CART_ADD = "/api/cart/add"
-
-# View cart endpoint (GET)
-CART_VIEW = "/api/cart"
-
-# Clear cart (optional)
-CART_CLEAR = "/api/cart/clear"
+# SFCC uses same endpoint for GET (view) and POST (add)
+CART_ADD = f"{BASE_API}/cart"   # POST
+CART_VIEW = f"{BASE_API}/cart"  # GET
+CART_CLEAR = f"{BASE_API}/cart" # DELETE (if supported)
 
 
 # =============================================================================
 # CHECKOUT FLOW
 # =============================================================================
-# These endpoints are hit sequentially during checkout.
+# Standard SFCC checkout sequence
+CHECKOUT_INIT = f"{BASE_API}/checkout"
+CHECKOUT_SHIPPING = f"{BASE_API}/checkout/shipping"
+CHECKOUT_PAYMENT = f"{BASE_API}/checkout/payment"
+CHECKOUT_SUBMIT = f"{BASE_API}/checkout/submit"
+ORDER_CONFIRM = f"{BASE_API}/orders/{{order_id}}"
 
-# Initialize checkout session
-CHECKOUT_INIT = "/api/checkout"
 
-# Set shipping address
-CHECKOUT_SHIPPING = "/api/checkout/shipping"
-
-# Set payment method
-CHECKOUT_PAYMENT = "/api/checkout/payment"
-
-# Submit final order
-CHECKOUT_SUBMIT = "/api/checkout/submit"
-
-# Order confirmation
-ORDER_CONFIRM = "/api/order/{order_id}"
+# =============================================================================
+# REQUIRED COOKIES (for bot protection)
+# =============================================================================
+# These must all be present from a real browser session
+REQUIRED_COOKIES = [
+    "auth",           # JWT authentication (JSON object containing access_token)
+    "reese84",        # Bot protection token
+    "datadome",       # Bot detection
+    "visid_incap_2682446",  # Imperva visitor ID
+    "nlbi_2682446",         # Imperva load balancer
+    # "incap_ses_*",        # Imperva session (wildcard)
+    "SSID",           # Salesforce session ID
+    "SSSC",           # Salesforce session cookie
+    "SSOD",           # Salesforce session data
+    "correlationId",  # Request correlation
+]
 
 
 # =============================================================================
 # PAYLOAD TEMPLATES
 # =============================================================================
-# These are example structures. Update based on actual API payloads.
 
-def cart_add_payload(product_id: str, size: str, quantity: int = 1) -> dict:
-    """Build add-to-cart payload."""
-    return {
+def cart_add_payload(product_id: str, size: str = "", quantity: int = 1) -> dict:
+    """
+    Build add-to-cart payload.
+
+    SFCC typically uses a simple structure. The 'size' field may not be needed
+    if it's encoded in the product_id variant.
+    """
+    payload = {
         "productId": product_id,
-        "size": size,
         "quantity": quantity,
-        # Add other required fields here after mapping
     }
+    # Only add size if provided (some products don't have sizes)
+    if size:
+        payload["size"] = size
+    return payload
 
 
 def shipping_payload(profile) -> dict:
-    """Build shipping address payload."""
+    """Build shipping address payload for SFCC."""
     return {
         "address": {
             "firstName": profile.first_name,
             "lastName": profile.last_name,
-            "line1": profile.address1,
-            "line2": profile.address2,
+            "address1": profile.address1,
+            "address2": profile.address2 or "",
             "city": profile.city,
-            "state": profile.state,
+            "stateCode": profile.state,
             "postalCode": profile.zip_code,
-            "country": profile.country,
+            "countryCode": profile.country,
             "phone": profile.phone,
         },
         "email": profile.email,
@@ -99,23 +107,27 @@ def shipping_payload(profile) -> dict:
 
 
 def payment_payload(profile) -> dict:
-    """Build payment method payload."""
-    # NOTE: Real sites often tokenize card data.
-    # This may need to be adjusted based on how the site handles payments.
+    """
+    Build payment method payload.
+
+    NOTE: SFCC often tokenizes card data via a payment processor.
+    This structure may need adjustment based on actual checkout flow.
+    """
     return {
-        "payment": {
+        "paymentInstrument": {
             "cardNumber": profile.card_number,
-            "expirationDate": profile.card_exp,
-            "cvv": profile.card_cvv,
+            "expirationMonth": profile.card_exp.split("/")[0] if "/" in profile.card_exp else profile.card_exp[:2],
+            "expirationYear": profile.card_exp.split("/")[1] if "/" in profile.card_exp else profile.card_exp[2:],
+            "securityCode": profile.card_cvv,
         },
         "billingAddress": {
             "firstName": profile.first_name,
             "lastName": profile.last_name,
-            "line1": profile.address1,
+            "address1": profile.address1,
             "city": profile.city,
-            "state": profile.state,
+            "stateCode": profile.state,
             "postalCode": profile.zip_code,
-            "country": profile.country,
+            "countryCode": profile.country,
         },
     }
 
@@ -123,3 +135,10 @@ def payment_payload(profile) -> dict:
 def url(endpoint: str, **kwargs) -> str:
     """Build full URL from endpoint template."""
     return BASE_URL + endpoint.format(**kwargs)
+
+
+def product_referer(product_id: str, slug: str = "") -> str:
+    """Build product page referer URL."""
+    if slug:
+        return f"{BASE_URL}/en-ca/product/{product_id}/{slug}"
+    return f"{BASE_URL}/en-ca/product/{product_id}"

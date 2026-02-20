@@ -11,8 +11,8 @@ from rich.console import Group
 from . import logger
 from .tasks import TaskManager, Task, State
 from .proxy import ProxyPool
-from .session import SessionManager, load_cookies
-from .http_client import HTTPClient
+from .session import SessionManager, load_cookies, load_session
+from .http_client import HTTPClient, SessionExpiredError
 from .monitor import check_stock
 from .cart import add_to_cart, CartError
 from .checkout import run_checkout, CheckoutError
@@ -171,9 +171,14 @@ async def run_all(
     Returns:
         Summary dict with success/failed counts
     """
-    # Load session
+    # Load session with auth token extraction
     try:
-        cookies = load_cookies()
+        session = load_session()
+        log.info(f"Session loaded (auth: {'yes' if session.auth_token else 'no'})")
+
+        if not session.has_bot_protection():
+            log.warning("Missing bot protection cookies - may get blocked")
+
     except FileNotFoundError:
         log.error("No session cookies. Run 'login' first.")
         return {"success": 0, "failed": len(manager.tasks)}
@@ -188,8 +193,13 @@ async def run_all(
     # Get proxy (sticky per task will be handled in run_task)
     proxy_url = proxy_pool.get()
 
-    # Create shared client
-    async with HTTPClient(cookies=cookies, proxy=proxy_url) as client:
+    # Create shared client with auth token
+    async with HTTPClient(
+        cookies=session.cookies,
+        auth_token=session.auth_token,
+        csrf_token=session.csrf_token,
+        proxy=proxy_url,
+    ) as client:
         tasks = manager.sorted_by_priority()
 
         async def update_display(live: Live):

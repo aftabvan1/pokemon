@@ -1,4 +1,4 @@
-"""Shared HTTP client with HTTP/2, connection pooling, and retry logic."""
+"""Shared HTTP client with HTTP/2, JWT auth, and retry logic."""
 from __future__ import annotations
 
 import asyncio
@@ -17,16 +17,25 @@ MAX_RETRIES = 3
 BACKOFF_BASE = 2  # seconds
 
 
+class SessionExpiredError(Exception):
+    """Raised when session/auth token is expired."""
+    pass
+
+
 class HTTPClient:
-    """Shared HTTP/2 client with connection pooling and retry logic."""
+    """Shared HTTP/2 client with JWT auth, connection pooling, and retry logic."""
 
     def __init__(
         self,
         cookies: str = "",
+        auth_token: Optional[str] = None,
+        csrf_token: Optional[str] = None,
         proxy: Optional[str] = None,
         timeout: float = 30.0,
     ):
         self.cookies = cookies
+        self.auth_token = auth_token
+        self.csrf_token = csrf_token
         self.proxy = proxy
         self._client: Optional[httpx.AsyncClient] = None
         self._timeout = httpx.Timeout(timeout, connect=10.0)
@@ -46,6 +55,12 @@ class HTTPClient:
     async def start(self) -> None:
         """Initialize the client."""
         if self._client is None:
+            # Log auth status
+            if self.auth_token:
+                log.debug("HTTP client initialized with Bearer auth")
+            else:
+                log.warning("HTTP client initialized without auth token")
+
             self._client = httpx.AsyncClient(
                 http2=True,
                 timeout=self._timeout,
@@ -75,11 +90,32 @@ class HTTPClient:
         json: Optional[dict] = None,
         data: Optional[Any] = None,
         retries: int = MAX_RETRIES,
+        request_type: str = "api",
     ) -> httpx.Response:
-        """Make request with retry logic and error handling."""
+        """
+        Make request with retry logic, auth, and error handling.
+
+        Args:
+            method: HTTP method
+            url: Request URL
+            headers: Additional headers to merge
+            json: JSON body
+            data: Form data
+            retries: Max retry attempts
+            request_type: 'api', 'page', or 'checkout' for header profiles
+
+        Returns:
+            httpx.Response
+
+        Raises:
+            SessionExpiredError: If 401/403 indicates auth failure
+        """
+        # Build headers with auth token
         req_headers = get_headers(
             cookies=self.cookies,
-            request_type="api" if json else "page",
+            auth_token=self.auth_token,
+            csrf_token=self.csrf_token,
+            request_type=request_type if not json else "api",
         )
         if headers:
             req_headers.update(headers)
@@ -95,6 +131,18 @@ class HTTPClient:
                     json=json,
                     data=data,
                 )
+
+                # Auth failure - session expired
+                if response.status_code in [401, 403]:
+                    log.warning(f"Auth failure ({response.status_code}) - session may be expired")
+                    # Only raise on first attempt to allow caller to handle
+                    if attempt == 0:
+                        raise SessionExpiredError(
+                            f"Auth failed with {response.status_code}. Re-login required."
+                        )
+                    # On retry, just continue
+                    await asyncio.sleep(1)
+                    continue
 
                 # Rate limited - back off
                 if response.status_code == 429:
@@ -118,6 +166,10 @@ class HTTPClient:
 
                 return response
 
+            except SessionExpiredError:
+                # Don't retry auth failures - let caller handle
+                raise
+
             except httpx.TimeoutException:
                 last_error = httpx.TimeoutException(f"Timeout on attempt {attempt + 1}")
                 log.warning(f"Timeout (attempt {attempt + 1}/{retries})")
@@ -138,3 +190,14 @@ class HTTPClient:
     async def post(self, url: str, **kwargs) -> httpx.Response:
         """POST request."""
         return await self.request("POST", url, **kwargs)
+
+    async def delete(self, url: str, **kwargs) -> httpx.Response:
+        """DELETE request."""
+        return await self.request("DELETE", url, **kwargs)
+
+    def update_auth(self, auth_token: str, csrf_token: Optional[str] = None) -> None:
+        """Update auth tokens after session refresh."""
+        self.auth_token = auth_token
+        if csrf_token:
+            self.csrf_token = csrf_token
+        log.info("Auth tokens updated")
