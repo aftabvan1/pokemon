@@ -2,6 +2,7 @@
 
 import asyncio
 from pathlib import Path
+from typing import Optional
 
 import typer
 
@@ -10,11 +11,31 @@ from .config import Config
 from .display import console, task_table, summary_panel
 from .tasks import TaskManager
 
+__version__ = "0.1.0"
+
+
+def version_callback(value: bool):
+    if value:
+        console.print(f"[bold]Porter[/] v{__version__}")
+        raise typer.Exit()
+
+
 app = typer.Typer(
     name="porter",
     help="Porter - Auto-purchase bot",
     add_completion=False,
 )
+
+
+@app.callback()
+def main_callback(
+    version: Optional[bool] = typer.Option(
+        None, "--version", "-v", callback=version_callback, is_eager=True,
+        help="Show version and exit"
+    ),
+):
+    """Porter - Auto-purchase bot."""
+    pass
 
 
 @app.command()
@@ -132,6 +153,59 @@ def test_notify():
             console.print("[red]Failed to send[/]")
 
     asyncio.run(send_test())
+
+
+@app.command()
+def health():
+    """Run pre-flight health checks."""
+    logger.setup()
+
+    from .proxy import ProxyPool
+    from .health import run_all_checks, print_results
+
+    config = Config.load()
+    pool = ProxyPool()
+    pool.load(Path("data/proxies.txt"))
+
+    async def run_checks():
+        results = await run_all_checks(pool, config.discord_webhook)
+        all_passed = print_results(results)
+        if not all_passed:
+            raise typer.Exit(1)
+
+    asyncio.run(run_checks())
+
+
+@app.command(name="test-proxies")
+def test_proxies(
+    proxies: Path = typer.Option(
+        Path("data/proxies.txt"), "--proxies", "-p", help="Proxies file"
+    ),
+    timeout: float = typer.Option(10.0, "--timeout", "-t", help="Timeout per proxy"),
+):
+    """Test all proxies and show results."""
+    logger.setup()
+
+    from .proxy import ProxyPool, warmup_proxies
+
+    pool = ProxyPool()
+    count = pool.load(proxies)
+
+    if count == 0:
+        console.print("[yellow]No proxies found in file[/]")
+        raise typer.Exit(1)
+
+    console.print(f"[blue]Testing {count} proxies...[/]\n")
+
+    async def run_warmup():
+        healthy = await warmup_proxies(pool)
+        console.print(f"\n[green]Healthy:[/] {healthy}/{count}")
+
+        stats = pool.stats()
+        for name, s in stats.items():
+            console.print(f"  {name}: {s['healthy']}/{s['total']} healthy")
+
+    asyncio.run(run_warmup())
 
 
 def main():
